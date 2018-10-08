@@ -1,0 +1,465 @@
+---
+title: 'Prediction on the Success of Bank Telemarketing on Term Deposit Subscription'
+author: 
+- Xiao Liu | xiaol5
+- Soo Jong Roh | sroh4
+- Zhaobo Wu | zwu38
+- Michael Dahlin | mdahlin2
+date: "May 9, 2018"
+abstract: "This report examined telemarketing campaign data with a goal to predict if the client would sign up for the product, a bank term deposit. It also aimed to find a prediction model which can help increasing the profits of the bank from its term deposit subscriptions. Four different classification methods (Random Forest, Elastic Net, Node Harvest, and Logistic Regression) with three different combinations of variables were used for prediction. Each of the 12 models was applied to the balance function in order to find the optimal cutoff. Finally, the Elastic Net model was chosen as the best model since it has the highest AUC value and a good overall accuracy. The model can serve as a filter for the bank to predict the clients’ willingness to subscribe the term deposit so they can be more efficient when targeting at clients."
+output: 
+  html_document: 
+    theme: flatly
+    toc: true
+---
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+library(readr)
+library(caret)
+library(ggplot2)
+library(ggthemes)
+library(pROC)
+library(knitr)
+library(kableExtra)
+library(nodeHarvest)
+library(dplyr)
+library(tidyverse)
+library(gbm)
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+bank_add = read.csv("bank-additional.csv", sep=";")
+bank_add = bank_add[, -c(11)]
+
+bank_add$factor_pdays = rep(0, nrow(bank_add))
+
+for(i in 1:nrow(bank_add)) {
+  if(bank_add$pdays[i] <= 7) {
+    bank_add$factor_pdays[i] = '0-1 Week'
+  } else if(bank_add$pdays[i] <= 14) {
+    bank_add$factor_pdays[i] = '1-2 Weeks'
+  } else if(bank_add$pdays[i] <= 21) {
+    bank_add$factor_pdays[i] = '2+ Weeks'
+  } else {
+    bank_add$factor_pdays[i] = 'NPC'
+  }}
+bank_add$factor_pdays = as.factor(bank_add$factor_pdays)
+#remove pdays
+bank_add$pdays = NULL
+```
+
+# Introduction 
+
+This report looks at data for a telemarketing campaign for a bank to get callers to sign up for a cash investment with them, also known as a bank term deposit. 
+
+The goal of this report is to try to determine which clients will be sign up for the bank term deposit, so that the callers can be more efficient when target at potential clients for promoting the term deposit and therefore leading to more profit for the company. With the goal that we mentioned above, classifying clients that will sign up successfully and avoiding misclassification of those clients is extremely important.
+
+The response variable for this report, `y`, contains binary “yes” or “no” responses which is heavily weighted toward “no” outcomes. The explanatory variables contain both demographic information and information about previous contact from past marketing campaigns. A complete list and description of the variables can be found in the data dictionary in the Appendix. The original data set is collected from http://archive.ics.uci.edu/ml/datasets/Bank+Marketing
+ 
+To get a better understanding of the data we have, let's fist have a look at the features of some variables in the dataset.
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center',  fig.width = 6}
+# data show unbalance
+theme_update(plot.title = element_text(hjust = 0.5))
+ggplot(bank_add, aes(x=y, fill= y)) +
+  geom_bar(width=0.3) + geom_bar(aes(fill = y) )+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())  +
+  labs(x = "y", y = "Counts") + ggtitle("Term Deposit Subscriptions") +
+  coord_flip()
+```
+
+The response variable is `y` and takes values `Yes` and `No`. The plot shows extreme unbalanced data with only about 10% of y being "Yes". 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center',fig.width = 8}
+theme_update(plot.title = element_text(hjust = 0.5))
+ggplot(bank_add, aes(x=job, fill=job )) +
+  geom_bar(aes(fill = job) )+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(x = "Jobs", y = "Counts") + ggtitle("Jobs") 
+```
+
+```{r, eval=FALSE, include=FALSE}
+sum(bank_add$job == "admin.")
+sum(bank_add$job == "blue-collar")
+sum(bank_add$job == "technician")
+```
+
+Admin(1012), blue-collar(884), and technician(691) are the major jobs of the clients who were contacted(numbers in bracket are the corresponding number of clients in the type of job).
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE, fig.align='center',fig.width = 8}
+theme_update(plot.title = element_text(hjust = 0.5))
+ggplot(bank_add, aes(x=education, fill = education)) +
+  geom_bar(aes(fill = education) )+
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank()) +
+  labs(x = "Education Level", y = "Counts") + ggtitle("Education Level")
+```
+
+```{r, eval=FALSE, include=FALSE}
+sum(bank_add$education == "high.school")
+sum(bank_add$education == "university.degree")
+sum(bank_add$education == "illiterate")
+```
+
+University degree(1264) and high school degree(921) are the major groups of the education level of clients who were contacted(numbers in bracket are the corresponding number of clients in the type of education level). Only one of the contacted client was illiterate.
+
+The following plots explore the relationship of some selected feature variables with the response variable.
+
+```{r, echo=FALSE, fig.height=6, fig.width=12, message=FALSE, warning=FALSE}
+featurePlot(x = bank_add[ ,c(1, 11, 12, 14:18)], y = bank_add$y, plot = "density",
+            scales = list(x = list(relation = "free"), y = list(relation = "free")),
+            adjust = 1.5, pch = "|", layout = c(4, 2),
+            auto.key = list(columns = 2))
+```
+
+The variables `emp.var.rate`, `euribor3m` and `nr.employed` seem to have spikes at higher values which differentiate the “no” values from the “yes” values. Also, while `age` seems to have a similar distribution between the two different responses, the tail contains more “yes” responses relative to the “no” responses especially in the upper range. Looking at these distributions can give an understanding to the relative variable importance figure above.
+
+Here we fit a GBM model in order to find important variables. As it shows below, `job`, `month`, `euribor3m`, `nr.employed`, `age`, `education`, and `day_of_week` are relatively important variables. 
+
+```{r, echo=FALSE, fig.height=8, fig.width=12, message=FALSE, warning=FALSE, results='hide'}
+#relative importance image
+rel_imp = gbm((as.numeric(y) - 1) ~ ., data = bank_add, distribution = "bernoulli",
+                  n.trees = 5000, interaction.depth = 4, shrinkage = 0.01)
+summary(rel_imp, par(las = 0.8), main = "Relative Importance Plot")
+```
+
+# Methods
+
+### Data
+
+The dataset originally contains 4119 observations with 21 variables(response variable included) and there is no missing value. 
+
+As noted in the data dictionary (see Appendix), the `duration` variable, as suggested by the author, should not be used for prediction and should only be used as a benchmark. This is because duration is not known before the call but is clear after the call. 
+
+The variable `pdays` is coded such that the value of ‘999’ means that there was no previous contact. Since the majority of the observations have the value of ‘999’, so `pdays` was converted for this report to be a factor variable and was renamed as `factor_pdays` with 4 levels for those who were never contacted, those who were last contacted between 0 and 1 week, people who were last contacted between 1 to 2 weeks, and people who were last contacted over 2 weeks ago. 
+
+After removing `duration`, the dataset used for analysis contains 4119 observations with 20 variables (response variable included).
+
+The data was then split into a train dataset and test dataset using the `createDataPartition` function for a 80/20 split for the purpose of measuring the prediction accuracy. This put 3,296 observations in the training dataset and 823 in the test dataset.
+
+### Models
+
+We considered four methods:
+
+- Random Forest (`rf`)
+- Penalized Logistic Regression, Elastic-Net (`glmnet`)
+- Node Harvest (`nodeHarvest`) [^1]
+- Logistic Regression (`glm`)
+
+For each different method, 3 variable subsets were considered: A small subset where the top four variables from the feature importance figure are chosen, a medium subset including the four variables from the small subset along with next three variables from the feature importance figure, and a subset that includes the full set of variables.
+
+- `small`: `job`, `month`, `euribor3m`, `nr.employed`
+- `medium`: `job`, `month`, `euribor3m`, `nr.employed`, `age`, `education`, and `day_of_week`
+- `full`: All features
+
+```{r, message=FALSE, warning=FALSE}
+small_form = formula(y ~ job + month + euribor3m + nr.employed)
+med_form = formula(y ~ job + month + euribor3m + nr.employed + age +
+                        education + day_of_week)
+full_form = formula(y ~ .)
+```
+
+[^1]: Node harvest is a simple interpretable tree-like estimator for high-dimensional regression and classification. More information can be found on it’s documentation page at https://cran.r-project.org/web/packages/nodeHarvest/index.html
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+set.seed(12345)
+bank_add_idx = createDataPartition(bank_add$y, p = 0.80, list = FALSE)
+bank_add_trn = bank_add[bank_add_idx, ]
+bank_add_tst = bank_add[-bank_add_idx, ]
+```
+
+Since we had a total of 12 models, it would take up too much space if we included all the training models in the report. So, an example of the training model using the Random Forest method was given below. The rest models were fitted in the same function except they used different methods. All of 12 models were trained using the `train` function from the `caret` package, and tuning was done using 5-fold cross-validation.
+
+```{r, message=FALSE, warning=FALSE}
+# Random Forest
+set.seed(12345)
+rf_small = train(small_form, data = bank_add_trn,
+                         method = "rf",
+                         metric = "ROC",
+                         ntree = 1000, 
+                         trControl = trainControl(
+                           method = "cv", 
+                           number  = 5, 
+                           classProbs = TRUE, 
+                           summaryFunction = twoClassSummary))
+
+rf_median = train(med_form, data = bank_add_trn,
+                         method = "rf",
+                         metric = "ROC",
+                         ntree = 1000, 
+                         trControl = trainControl(
+                           method = "cv", 
+                           number  = 5, 
+                           classProbs = TRUE, 
+                           summaryFunction = twoClassSummary))
+
+rf_full = train(full_form, data = bank_add_trn,
+                         method = "rf",
+                         metric = "ROC",
+                         ntree = 1000, 
+                         trControl = trainControl(
+                           method = "cv", 
+                           number  = 5, 
+                           classProbs = TRUE, 
+                           summaryFunction = twoClassSummary))
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+# elastic net
+set.seed(12345)
+elastic_small = train(small_form, data = bank_add_trn,
+                      method = "glmnet",
+                         metric = "ROC",
+                         trControl = trainControl(
+                           method = "cv", 
+                           number  = 5, 
+                           classProbs = TRUE, 
+                           summaryFunction = twoClassSummary))
+
+elastic_median = train(med_form, data = bank_add_trn,
+                      method = "glmnet",
+                         metric = "ROC",
+                         trControl = trainControl(
+                           method = "cv", 
+                           number  = 5, 
+                           classProbs = TRUE, 
+                           summaryFunction = twoClassSummary))
+
+elastic_full = train(full_form, data = bank_add_trn,
+                      method = "glmnet",
+                         metric = "ROC",
+                         trControl = trainControl(
+                           method = "cv", 
+                           number  = 5, 
+                           classProbs = TRUE, 
+                           summaryFunction = twoClassSummary))
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE, results="hide"}
+set.seed(12345)
+nh_small = train(
+  small_form, data = bank_add_trn,
+  method = "nodeHarvest", metric = "ROC",
+   trControl = trainControl(method = "cv", number  = 5, 
+                           classProbs = TRUE, summaryFunction = twoClassSummary))
+
+nh_med = train(
+   med_form, data = bank_add_trn,
+   method = "nodeHarvest", metric = "ROC",
+   trControl = trainControl(method = "cv", number  = 5, 
+                           classProbs = TRUE, summaryFunction = twoClassSummary)
+)
+
+nh_full = train(
+  full_form, data = bank_add_trn,
+  method = "nodeHarvest", metric = "ROC",
+  trControl = trainControl(method = "cv", number  = 5, 
+                           classProbs = TRUE, summaryFunction = twoClassSummary)
+)
+
+```
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+# glm
+set.seed(12345)
+glm_small = train(small_form, data = bank_add_trn,
+                         method = "glm",
+                         metric = "ROC",
+                         trControl = trainControl(
+                           method = "cv", 
+                           number  = 5, 
+                           classProbs = TRUE, 
+                           summaryFunction = twoClassSummary))
+
+glm_medium = train(med_form, data = bank_add_trn,
+                         method = "glm",
+                         metric = "ROC",
+                         trControl = trainControl(
+                           method = "cv", 
+                           number  = 5, 
+                           classProbs = TRUE, 
+                           summaryFunction = twoClassSummary))
+
+glm_full = train(full_form, data = bank_add_trn,
+                         method = "glm",
+                         metric = "ROC",
+                         trControl = trainControl(
+                           method = "cv", 
+                           number  = 5, 
+                           classProbs = TRUE, 
+                           summaryFunction = twoClassSummary))
+```
+
+### Strategies
+
+A balance function was created and used to choose the optimal cutoff value. This balance function assumes that the average bank deposit is $100 and that the telemarketer callers make $15 per hour. From the dataset, the average duration of a call is 4.28 minutes meaning that, based on the $15/hr assumption, employee compensation per call is $1.07. We also considered a quasi-opportunity cost for the employee to be the percent of successful responses times the assumed average bank deposit plus the percent of unsuccessful responses times the employee compensation per call; that value is calculated to be $20.95. With these numbers we created the balance function that can be seen below where opportunity cost is considered only when our model predicts “no” and employee compensation per call is considered only when our model predicts “yes”. With actual data about the average deposit and employee wages, the numbers for this function could be tuned, but the number chosen are at least somewhat reasonable. 
+
+```{r balance function, message=FALSE, warning=FALSE}
+balance = function(mod) {
+  preds = predict(mod, bank_add_tst)
+  (100 - 1.07)   * sum(preds == "yes" & bank_add_tst$y == "yes") +
+  (-1.07) * sum(preds == "yes" & bank_add_tst$y == "no") +
+  (-100 + 20.95) * sum(preds == "no" & bank_add_tst$y == "yes") +
+  (20.95)  * sum(preds == "no" & bank_add_tst$y == "no")
+}
+```
+
+AUC, as a performance measurement for the models, was then calculated for each model. Accuracy and Sensitivity were also calculated as the comparison strategies in addition to AUC.
+
+```{r, message=FALSE, warning=FALSE, include=FALSE}
+# create table
+accuracy = function(mod) {
+  preds = predict(mod, bank_add_tst)
+  mean(preds == bank_add_tst$y)
+}
+
+cutoff = function(mod) {
+  cutoffs = seq(0.01, 1, by = 0.01)
+  balance_acc = rep(0, length(cutoffs))
+
+  # test balace values for different cutoffs
+  for (c in seq_along(cutoffs)) {
+    pred = ifelse(predict(mod, bank_add_tst, type = "prob")$yes > cutoffs[c], 
+                "yes", "no")
+    balance_acc[c] = balance(predicted = pred,
+                       actual = bank_add_tst$y)
+}
+  cutoffs[which.max(balance_acc)]
+}
+
+sens = function(mod) {
+  cut = cutoff(mod)
+  cms = confusionMatrix(table(pred = ifelse(predict(mod, bank_add_tst, type = "prob")$yes > cut,
+                                            "yes", "no"), truth = bank_add_tst$y), positive = "yes")
+  #extracting sensitivity from the confusion matrix
+  cms[[4]][1]
+}
+
+balance = function(actual, predicted) {
+  (100 - 1.07)   * sum(predicted == "yes" & actual == "yes") +
+  (20.95 - 100) * sum(predicted == "no" & actual == "yes") +
+  -1.07  * sum(predicted == "yes" & actual == "no") +
+  20.95   * sum(predicted == "no" & actual == "no")
+}
+
+auc_func = function(mod) {
+  cut = cutoff(mod)
+  predictor2 = ifelse(predict(mod, bank_add_tst, type = "prob")$yes > cut, 1, 0)
+  auc(response = as.numeric(bank_add_tst$y)-1, predictor = predictor2)
+}
+
+mod_list = list(rf_small, rf_median, rf_full,
+                elastic_small, elastic_median, elastic_full,
+                glm_small, glm_medium, glm_full,
+                nh_small, nh_med, nh_full
+                )
+
+results = data.frame(Method = rep(c("Small", "Medium", "Large"), times = 4),
+                     Cutoff = sapply(mod_list, cutoff),
+                     Accuracy = sapply(mod_list, accuracy),
+                     Sensitivity = sapply(mod_list, sens),
+                     AUC = sapply(mod_list, auc_func))
+```
+
+# Results
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+#helper function to round dfs
+round_df <- function(df, digits) {
+  nums <- vapply(df, is.numeric, FUN.VALUE = logical(1))
+
+  df[,nums] <- round(df[,nums], digits = digits)
+
+  (df)
+}
+results = round_df(results, 4)
+                     
+results %>%
+  mutate(
+    Method = Method,
+    Cutoff = Cutoff,
+    Accuracy = Accuracy,
+    Sensitivity = Sensitivity,
+    AUC = cell_spec(AUC, "html", color = ifelse(AUC == max(AUC), "darkblue", "grey"))
+  ) %>%
+  select(Method, Cutoff, Accuracy, Sensitivity, AUC) %>%
+   kable("html", escape = F)%>%
+  kable_styling(full_width = FALSE) %>% 
+  group_rows("Random Forest", 1, 3) %>%
+  group_rows("Elastic Net", 4, 6) %>%
+  group_rows("GLM", 7, 9) %>%
+  group_rows("Node Harvest", 10, 12) %>%
+row_spec(6, bold = T, color = "black", background = "lightgreen")
+
+```
+
+Out of 12 models fitted, Node Harvest model with the full set of variables and Elastic Net model with the full set of variables scored the highest AUC value of 0.7188. Since both models achieved same AUC value, a model with higher accuracy, the Elastic Net model, was chosen. The following table shows its performance. 
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+table(pred = ifelse(predict(elastic_full, bank_add_tst[,-c(19)], type = "prob")$yes > 0.19, "yes", "no"), truth = bank_add_tst$y)
+```
+
+# Discussion
+
+The final model we chose for this project is the Elastic Net model which used the full variable features. The cutoff we used for this model is 0.19, categorizing the response variable as “yes” if it has a probability larger than 0.19 and "no" otherwise. Around 90% data can be classified correctly, with a sensitivity value being 0.5222 and a specificity value being 0.9154. The sensitivity value means that given those who are actually willing to subscribe the term deposit, we have about 52% of chance to get a correct prediction. And the specificity value shows that given those who are actually unwilling to subscribe the term deposit, we have about 92% of possibility to get a correct prediction. 
+
+During the process of fitting different models, we noticed that different methods do not provide significantly different results on model performance. In contrast, it is the different cutoffs that affect the sensitivity and overall predictions, which clearly are more important for our goals. 
+
+The best model that we found above focuses on increasing the prediction accuracy of both predicting “yes” and “no” correctly. It provides banks a good tool to filter the customers who may bring a negative impact on the banks' benefit and help callers to focus on potential clients who are more likely to subscribe their product, so they can be more efficient when targeting at clients, therefore helping banks to maximize profits in terms of term deposit subscriptions.
+
+# Appendix
+
+## Data Dictionary
+
+```{r data_dict, echo=FALSE, fig.cap='', message=FALSE, warning=FALSE, result='asis'}
+
+#creating the data dictionary
+bank_add_dd = read.csv("bank-additional.csv", sep=";")
+var_names = noquote(c(colnames(bank_add_dd), "factor_pdays"))
+
+var_desc = c('client age', 'type of job', 'marital status',
+             'education level', 'client has credit in default?',
+             'client has housing loan?', 'client has personal loan?',
+             'contact communication type', 'last contact month of year',
+             'last contact day of week', 'last contact duration (seconds)',
+             'number of times client has been contacted (this campaign)',
+             'days passed since previous contact (previous campaign)',
+             'number of contacts before this campaign',
+             'outcome of previous campaign',
+             'employment variation rate (quarterly indicator)',
+             'consumer price index (monthly indicator)',
+             'consumer confidence index (monthly indicator)',
+             'euribor 3 month rate (daily indicator)',
+             'number of employees (quarterly indicator)',
+             'has the client subscribed a term deposit?', 'days passed since previous contact (previous campaign) by group')
+
+var_type_b = c('numeric', 'categorical', 'categorical', 
+                'categorical', 'categorical', 'categorical',
+                'categorical', 'categorical', 'categorical',
+                'categorical', 'numeric', 'numeric',
+                'numeric', 'numeric', 'categorical', 
+                'numeric', 'numeric', 'numeric', 'numeric',
+                'numeric', 'categorical','categorical')
+
+var_examp = rbind(t(bank_add_dd[30,]), "1-2 weeks")    
+                               
+var_notes = c('', '12 levels', '4 levels (divorced means divorced or widowed)',
+              '8 levels', '', '', '', 'either cellular or telephone',
+              '', '', 'should only be used for benchmark purposes',
+              'includes last contact', '999 means no previous contact',
+              '', '', '', '', '', '', '', 'response variable, binary ("yes"/"no")', 'derived from pdays. 4 levels: 0-1 Week 1-2 Weeks 2+ Weeks NPC(no previous contact)')
+
+data_dict = data.frame(var_names, var_desc, var_type_b, var_examp, var_notes)
+rownames(data_dict) = c()
+colnames(data_dict) = c('Name', 'Description', 'Type', 'Example', 'Notes')
+kable_styling(kable(data_dict, format = "html", digits = 3), full_width = FALSE)%>%
+    kable_styling("striped", full_width = F)
+
+```
+
+
